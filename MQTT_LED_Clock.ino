@@ -10,15 +10,15 @@ With the Adafruit NeoPixel library for controlling the NeoPixels.
 
 This code includes MQTT support for changing the clock color and brightness dynamically.
 It uses the PubSubClient library for MQTT communication and Preferences for storing Wi-Fi and MQTT settings.
-The clock can be configured via a web portal if it fails to connect to Wi-Fi.
 
-To conect to Wi-Fi, it provides a web portal where you can enter the Wi-Fi SSID and password.
-It also allows you to set the MQTT server, port, color topic, and brightness topic.
-The web portal is accessible when the clock is not connected to Wi-Fi.
+Please fill in the following variables with your own settings:
+- WIFI_SSID: Your Wi-Fi SSID
+- WIFI_PASSWORD: Your Wi-Fi password
+- MQTT_SERVER_NAME: Your MQTT server hostname (not its IP address)
+- MQTT_SERVER_PORT: Your MQTT server port (e.g. 1883)
+- MQTT_COLOR_TOPIC: The MQTT topic for color changes (e.g. "led-clock/color-hex")
+- MQTT_BRIGHTNESS_TOPIC: The MQTT topic for brightness changes (e.g. "led-clock/brightness")
 
-The web portal name is "MQTT-LED-Clock-Config" and the password is "YOUR_AP_PASSWORD".
-When connected to the ClockConfig access point, you can open a web browser 
-and go to http://192.168.4.1
 */
 
 #include <WiFi.h>
@@ -28,8 +28,6 @@ and go to http://192.168.4.1
 #include <Adafruit_NeoPixel.h> // installed version 1.12.5
 #include <PubSubClient.h> // by Nick installed version 2.8
 #include <math.h>
-#include <WebServer.h>
-#include <Preferences.h>
 
 bool wifiConnected = false;
 
@@ -37,21 +35,20 @@ bool wifiConnected = false;
 #define my_timezone "CET-1CEST,M3.5.0,M10.5.0/3" // Europe/Amsterdam
 #define NTP_SERVER "europe.pool.ntp.org"
 
-#define MQTT_SERVER "YOUR_MQTT_SERVER"
-#define MQTT_PORT 1883
-#define MQTT_COLOR_TOPIC "YOUR/COLOR/TOPIC"
-#define MQTT_BRIGHTNESS_TOPIC "YOUR/BRIGHTNESS/TOPIC"
-#define ACCESS_POINT_PASSWORD "YOUR_AP_PASSWORD"
+#define WIFI_SSID "YOUR_WIFI_SSID"
+#define WIFI_PASSWORD "YOUR_WIFI_PASSWORD"
 
-Preferences preferences;
-WebServer server(80);
+#define MQTT_SERVER_NAME "YOUR_MQTT_SERVER_HOSTNAME"
+#define MQTT_SERVER_PORT YOUR_MQTT_SERVER_PORT // e.g. 1883
+#define MQTT_COLOR_TOPIC "YOUR/COLOR/TOPIC" // e.g. "led-clock/color-hex"
+#define MQTT_BRIGHTNESS_TOPIC "YOUR/BRIGHTNESS/TOPIC" // e.g. "led-clock/brightness"
 
-String stored_wifi_ssid = "";
-String stored_wifi_password = "";
-String stored_mqtt_server = "";
-int stored_mqtt_port = 1883;
-String stored_mqtt_color_topic = "";
-String stored_mqtt_brightness_topic = "";
+String stored_wifi_ssid = WIFI_SSID;
+String stored_wifi_password = WIFI_PASSWORD;
+String stored_mqtt_server = MQTT_SERVER_NAME;
+uint16_t stored_mqtt_server_port = MQTT_SERVER_PORT;
+String stored_mqtt_color_topic = MQTT_COLOR_TOPIC;
+String stored_mqtt_brightness_topic = MQTT_BRIGHTNESS_TOPIC;
 
 WiFiClient espClient;
 PubSubClient mqttClient(espClient);
@@ -76,34 +73,21 @@ int currentSecond = 0;
 
 int previousMinute = 0;
 
-String access_point_password = ACCESS_POINT_PASSWORD;
-
 // Declare our NeoPixel objects:
 Adafruit_NeoPixel stripClock(LEDCLOCK_COUNT, LEDCLOCK_PIN, NEO_GRB + NEO_KHZ800);
 
 void setup() {
 
-  // Uncomment the following lines to clear the stored preferences
-  // for resetting the stored Wi-Fi and MQTT settings.
-  // preferences.begin("clock", false);
-  // preferences.clear();
-  // preferences.end();
+  stored_wifi_ssid = WIFI_SSID;
+  stored_wifi_password = WIFI_PASSWORD; 
+  stored_mqtt_server = MQTT_SERVER_NAME;
+  stored_mqtt_server_port = MQTT_SERVER_PORT;
+  stored_mqtt_color_topic = MQTT_COLOR_TOPIC;
+  stored_mqtt_brightness_topic = MQTT_BRIGHTNESS_TOPIC;
 
   Serial.begin(115200);
 
-  preferences.begin("clock", false);
-  stored_wifi_ssid = preferences.getString("ssid", "");
-  stored_wifi_password = preferences.getString("password", "");
-  stored_mqtt_server = preferences.getString("mqtt_server", MQTT_SERVER);
-  stored_mqtt_port = preferences.getInt("mqtt_port", MQTT_PORT);
-  stored_mqtt_color_topic = preferences.getString("mqtt_color_topic", MQTT_COLOR_TOPIC);
-  stored_mqtt_brightness_topic = preferences.getString("mqtt_brightness_topic", MQTT_BRIGHTNESS_TOPIC);
-
-  if (!connectToWiFi()) {
-    startConfigPortal();
-  }
-
-  mqttClient.setServer(stored_mqtt_server.c_str(), stored_mqtt_port);
+  mqttClient.setServer(stored_mqtt_server.c_str(), stored_mqtt_server_port);
   mqttClient.setCallback(mqttCallback);
 
   configTzTime(my_timezone, NTP_SERVER);
@@ -113,28 +97,16 @@ void setup() {
   stripClock.show();
   stripClock.setBrightness(brightness);
 
+  connectToWiFi();
 }
 
 void loop() {
 
   Serial.println(clockColour);
 
-  server.handleClient();
-
   if (WiFi.status() != WL_CONNECTED) {
     Serial.println("Lost Wi-Fi connection. Attempting to reconnect...");
-    WiFi.begin(stored_wifi_ssid.c_str(), stored_wifi_password.c_str());
-    int timeout = 10;  // 10 seconds timeout
-
-    while (WiFi.status() != WL_CONNECTED && timeout-- > 0) {
-      delay(1000);
-      Serial.print(".");
-    }
-
-    if (WiFi.status() == WL_CONNECTED) {
-      Serial.println("\nReconnected to Wi-Fi!");
-      wifiConnected = true;
-    } 
+    connectToWiFi();
   }
 
   // Resync time every 15 minutes
@@ -154,11 +126,13 @@ void loop() {
     currentSecond = timeinfo.tm_sec;
   }
 
-  if (!mqttClient.connected()) {
-    connectToMQTT();
-    mqttColorActive = false; // fallback if disconnected
+  if (WiFi.status() == WL_CONNECTED) {
+    if (!mqttClient.connected()) {
+      connectToMQTT();
+      mqttColorActive = false; // fallback if disconnected
+    }
+    mqttClient.loop();
   }
-  mqttClient.loop();
 
   // Choose color source
   uint32_t displayColor = clockColour;
@@ -358,24 +332,7 @@ void mqttCallback(char* topic, byte* payload, unsigned int length) {
   }
 }
 
-void connectToMQTT() {
-  while (!mqttClient.connected()) {
-    Serial.print("Connecting to MQTT...");
-    if (mqttClient.connect("led-clock-client")) {
-      Serial.println("connected");
-      mqttClient.subscribe(stored_mqtt_color_topic.c_str());
-      mqttClient.subscribe(stored_mqtt_brightness_topic.c_str());
-    } else {
-      Serial.print("failed, rc=");
-      Serial.print(mqttClient.state());
-      Serial.println(" try again in 5 seconds");
-      delay(5000);
-    }
-  }
-}
-
 bool connectToWiFi() {
-  if (stored_wifi_ssid.length() == 0) return false;
   WiFi.mode(WIFI_STA);
   WiFi.setHostname("MQTT-LED-Clock");
   WiFi.begin(stored_wifi_ssid.c_str(), stored_wifi_password.c_str());
@@ -392,48 +349,21 @@ bool connectToWiFi() {
   return false;
 }
 
-void startConfigPortal() {
-  WiFi.mode(WIFI_AP);
-  WiFi.softAP("MQTT-LED-Clock-Config", ACCESS_POINT_PASSWORD);
-  IPAddress IP = WiFi.softAPIP();
-  Serial.print("AP IP address: ");
-  Serial.println(IP);
-
-  server.on("/", HTTP_GET, []() {
-    String html = "<form action='/save' method='post'>"
-      "WiFi SSID: <input name='ssid'><br>"
-      "WiFi Password: <input name='password' type='password'><br>"
-      "MQTT Server: <input name='mqtt_server' value='" + stored_mqtt_server + "'><br>"
-      "MQTT Port: <input name='mqtt_port' value='" + String(stored_mqtt_port) + "'><br>"
-      "MQTT Color Topic: <input name='mqtt_color_topic' value='" + stored_mqtt_color_topic + "'><br>"
-      "MQTT Brightness Topic: <input name='mqtt_brightness_topic' value='" + stored_mqtt_brightness_topic + "'><br>"
-      "<input type='submit'></form>";
-    server.send(200, "text/html", html);
-  });
-
-  server.on("/save", HTTP_POST, []() {
-    stored_wifi_ssid = server.arg("ssid");
-    stored_wifi_password = server.arg("password");
-    stored_mqtt_server = server.arg("mqtt_server");
-    stored_mqtt_port = server.arg("mqtt_port").toInt();
-    stored_mqtt_color_topic = server.arg("mqtt_color_topic");
-    stored_mqtt_brightness_topic = server.arg("mqtt_brightness_topic");
-
-    preferences.putString("ssid", stored_wifi_ssid);
-    preferences.putString("password", stored_wifi_password);
-    preferences.putString("mqtt_server", stored_mqtt_server);
-    preferences.putInt("mqtt_port", stored_mqtt_port);
-    preferences.putString("mqtt_color_topic", stored_mqtt_color_topic);
-    preferences.putString("mqtt_brightness_topic", stored_mqtt_brightness_topic);
-
-    server.send(200, "text/html", "Saved! Rebooting...");
-    delay(1000);
-    ESP.restart();
-  });
-
-  server.begin();
-  while (true) {
-    server.handleClient();
-    delay(10);
+void connectToMQTT() {
+  if (WiFi.status() == WL_CONNECTED) {
+    Serial.print("Wifi is connected, now connecting MQTT...");
+    while (!mqttClient.connected()) {
+      Serial.print("Connecting to MQTT...");
+      if (mqttClient.connect("led-clock-client2")) {
+        Serial.println("connected");
+        mqttClient.subscribe(stored_mqtt_color_topic.c_str());
+        mqttClient.subscribe(stored_mqtt_brightness_topic.c_str());
+      } else {
+        Serial.print("failed, rc=");
+        Serial.print(mqttClient.state());
+        Serial.println(" try again in 5 seconds");
+        delay(5000);
+      }
+    }
   }
 }
